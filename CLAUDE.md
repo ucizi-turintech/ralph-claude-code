@@ -92,6 +92,17 @@ The system uses a modular architecture with reusable components in the `lib/` di
    - `get_integrity_report()`: human-readable report with missing files and recovery instructions
    - Lightweight validation that runs every loop iteration
 
+9. **lib/interactive_session.sh** - Interactive tmux execution mode
+   - Drives an interactive Claude Code session through tmux (uses Claude Code Max subscription)
+   - `get_project_jsonl_dir()`: converts project path to Claude JSONL directory path
+   - `get_active_session_jsonl()`: finds the most recently modified session JSONL file
+   - `init_interactive_session()`: creates tmux panes and launches interactive Claude
+   - `send_prompt_interactive()`: delivers prompts via tmux load-buffer/paste-buffer
+   - `wait_for_response()`: polls JSONL file for turn completion (idle detection + turn_duration signal)
+   - `extract_response_from_jsonl()`: builds synthetic JSON output matching Claude CLI format
+   - `setup_interactive_tool_permissions()`: generates `.claude/settings.json` for tool auto-approval
+   - `teardown_interactive_session()`: cleanly closes the Claude session
+
 ## Key Commands
 
 ### Installation
@@ -159,6 +170,10 @@ ralph --auto-reset-circuit   # Auto-reset OPEN state on startup
 
 # Session management
 ralph --reset-session    # Reset session state manually
+
+# Interactive mode (Claude Code Max subscription)
+ralph --interactive --monitor   # Uses interactive Claude session via tmux
+ralph -i                        # Short flag
 ```
 
 ### Monitoring
@@ -176,7 +191,7 @@ tmux attach -t <session-name>
 
 ### Running Tests
 ```bash
-# Run all tests (566 tests)
+# Run all tests (593 tests)
 npm test
 
 # Run specific test suites
@@ -193,6 +208,7 @@ bats tests/unit/test_ralph_enable.bats
 bats tests/unit/test_circuit_breaker_recovery.bats
 bats tests/unit/test_file_protection.bats
 bats tests/unit/test_integrity_check.bats
+bats tests/unit/test_interactive_mode.bats
 ```
 
 ## Ralph Loop Configuration
@@ -246,6 +262,42 @@ Each loop iteration injects context via `build_loop_context()`:
 - Sessions are preserved in `.ralph/.claude_session_id`
 - Use `--continue` flag to maintain context across loops
 - Disable with `--no-continue` for isolated iterations
+
+### Interactive Mode
+
+Interactive mode (`--interactive` / `-i`) drives an interactive Claude Code session through tmux instead of using the `-p` (print/headless) API mode. This uses a Claude Code Max subscription and avoids per-token API costs.
+
+**How it works:**
+1. Ralph launches `claude` in a tmux pane (interactive session)
+2. Prompts are delivered via `tmux load-buffer` + `paste-buffer` (handles arbitrary size)
+3. Responses are read from Claude's JSONL session files (`~/.claude/projects/<path>/`)
+4. A synthetic JSON output file is constructed matching the `-p --output-format json` format
+5. The existing `analyze_response()` pipeline processes the output unchanged
+
+**Configuration:**
+```bash
+# In .ralphrc
+INTERACTIVE_MODE=true           # Enable interactive mode persistently
+
+# Or via CLI flag
+ralph --interactive --monitor   # One-time interactive mode
+ralph -i                        # Short form
+```
+
+**Tool Permissions in Interactive Mode:**
+- The `--allowedTools` flag only works with `-p` mode
+- Interactive mode generates `.claude/settings.json` in the project directory
+- Tools from `ALLOWED_TOOLS` in `.ralphrc` are auto-approved via this settings file
+
+**Turn Completion Detection:**
+- Primary: `turn_duration` system message in JSONL (definitive completion signal)
+- Fallback: 5 seconds of no new JSONL lines after content started arriving
+- Stuck detection: `notify-send` alert after 60 seconds of no response
+
+**Session Lifecycle:**
+- Interactive sessions have natural continuity (one long conversation)
+- No `--resume` flags needed; session persists until circuit breaker trips or Ralph exits
+- Circuit breaker trip → teardown + reinitialize fresh session
 
 ### Intelligent Exit Detection
 The loop uses a dual-condition check to prevent premature exits during productive iterations:
@@ -336,7 +388,7 @@ Ralph installs to:
 - **Commands**: `~/.local/bin/` (ralph, ralph-monitor, ralph-setup, ralph-import, ralph-migrate, ralph-enable, ralph-enable-ci)
 - **Templates**: `~/.ralph/templates/`
 - **Scripts**: `~/.ralph/` (ralph_loop.sh, ralph_monitor.sh, setup.sh, ralph_import.sh, migrate_to_ralph_folder.sh, ralph_enable.sh, ralph_enable_ci.sh)
-- **Libraries**: `~/.ralph/lib/` (circuit_breaker.sh, response_analyzer.sh, date_utils.sh, timeout_utils.sh, enable_core.sh, wizard_utils.sh, task_sources.sh, file_protection.sh)
+- **Libraries**: `~/.ralph/lib/` (circuit_breaker.sh, response_analyzer.sh, date_utils.sh, timeout_utils.sh, enable_core.sh, wizard_utils.sh, task_sources.sh, file_protection.sh, interactive_session.sh)
 
 After installation, the following global commands are available:
 - `ralph` - Start the autonomous development loop
@@ -519,7 +571,7 @@ Ralph uses a multi-layered strategy to prevent Claude from accidentally deleting
 
 ## Test Suite
 
-### Test Files (566 tests total)
+### Test Files (593 tests total)
 
 | File | Tests | Description |
 |------|-------|-------------|
@@ -541,6 +593,7 @@ Ralph uses a multi-layered strategy to prevent Claude from accidentally deleting
 | `test_wizard_utils.bats` | 20 | Wizard utility functions (stdout/stderr separation, prompt functions) |
 | `test_file_protection.bats` | 22 | File integrity validation (RALPH_REQUIRED_PATHS, validate_ralph_integrity, get_integrity_report) (Issue #149) |
 | `test_integrity_check.bats` | 12 | Pre-loop integrity check in ralph_loop.sh (startup + in-loop validation) (Issue #149) |
+| `test_interactive_mode.bats` | 27 | Interactive tmux execution mode (JSONL parsing, synthetic output, tool permissions, CLI flags) |
 
 ### Running Tests
 ```bash

@@ -724,6 +724,10 @@ TASK_SOURCES="${task_sources}"
 GITHUB_TASK_LABEL="ralph-task"
 BEADS_FILTER="status:open"
 
+# Interactive mode (uses Claude Code Max subscription instead of API key)
+# Set to true to drive an interactive Claude session via tmux
+INTERACTIVE_MODE=false
+
 # Circuit breaker thresholds
 CB_NO_PROGRESS_THRESHOLD=3
 CB_SAME_ERROR_THRESHOLD=5

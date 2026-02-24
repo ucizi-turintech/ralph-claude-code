@@ -17,6 +17,7 @@ source "$SCRIPT_DIR/lib/timeout_utils.sh"
 source "$SCRIPT_DIR/lib/response_analyzer.sh"
 source "$SCRIPT_DIR/lib/circuit_breaker.sh"
 source "$SCRIPT_DIR/lib/file_protection.sh"
+source "$SCRIPT_DIR/lib/interactive_session.sh"
 
 # Configuration
 # Ralph-specific files live in .ralph/ subfolder
@@ -46,6 +47,7 @@ _env_VERBOSE_PROGRESS="${VERBOSE_PROGRESS:-}"
 _env_CB_COOLDOWN_MINUTES="${CB_COOLDOWN_MINUTES:-}"
 _env_CB_AUTO_RESET="${CB_AUTO_RESET:-}"
 _env_CLAUDE_CODE_CMD="${CLAUDE_CODE_CMD:-}"
+_env_INTERACTIVE_MODE="${INTERACTIVE_MODE:-}"
 
 # Now set defaults (only if not already set by environment)
 MAX_CALLS_PER_HOUR="${MAX_CALLS_PER_HOUR:-100}"
@@ -118,6 +120,7 @@ RALPHRC_LOADED=false
 #   - CB_OUTPUT_DECLINE_THRESHOLD
 #   - RALPH_VERBOSE
 #   - CLAUDE_CODE_CMD (path or command for Claude Code CLI)
+#   - INTERACTIVE_MODE (use interactive tmux session instead of API)
 #
 load_ralphrc() {
     if [[ ! -f "$RALPHRC_FILE" ]]; then
@@ -155,6 +158,7 @@ load_ralphrc() {
     [[ -n "$_env_CB_COOLDOWN_MINUTES" ]] && CB_COOLDOWN_MINUTES="$_env_CB_COOLDOWN_MINUTES"
     [[ -n "$_env_CB_AUTO_RESET" ]] && CB_AUTO_RESET="$_env_CB_AUTO_RESET"
     [[ -n "$_env_CLAUDE_CODE_CMD" ]] && CLAUDE_CODE_CMD="$_env_CLAUDE_CODE_CMD"
+    [[ -n "$_env_INTERACTIVE_MODE" ]] && INTERACTIVE_MODE="$_env_INTERACTIVE_MODE"
 
     RALPHRC_LOADED=true
     return 0
@@ -331,6 +335,10 @@ setup_tmux_session() {
     # Forward --auto-reset-circuit if enabled
     if [[ "$CB_AUTO_RESET" == "true" ]]; then
         ralph_cmd="$ralph_cmd --auto-reset-circuit"
+    fi
+    # Forward --interactive if enabled
+    if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+        ralph_cmd="$ralph_cmd --interactive"
     fi
 
     # Chain tmux kill-session after the loop command so the entire tmux
@@ -1519,9 +1527,170 @@ EOF
     fi
 }
 
+# Interactive mode execution function
+# Follows the same contract as execute_claude_code() — returns 0/1/3
+execute_claude_code_interactive() {
+    local timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+    local output_file="$LOG_DIR/claude_output_${timestamp}.log"
+    local loop_count=$1
+    local calls_made=$(cat "$CALL_COUNT_FILE" 2>/dev/null || echo "0")
+    calls_made=$((calls_made + 1))
+
+    # Fix #141: Capture git HEAD SHA at loop start to detect commits as progress
+    local loop_start_sha=""
+    if command -v git &>/dev/null && git rev-parse --git-dir &>/dev/null 2>&1; then
+        loop_start_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+    fi
+    echo "$loop_start_sha" > "$RALPH_DIR/.loop_start_sha"
+
+    log_status "LOOP" "Executing Claude Code interactive (Call $calls_made/$MAX_CALLS_PER_HOUR)"
+    local timeout_seconds=$((CLAUDE_TIMEOUT_MINUTES * 60))
+
+    # Verify interactive session is alive
+    if ! check_interactive_session_alive; then
+        log_status "WARN" "Interactive session died, reinitializing..."
+        if ! init_interactive_session; then
+            log_status "ERROR" "Failed to reinitialize interactive session"
+            return 1
+        fi
+    fi
+
+    # Build loop context
+    local loop_context=""
+    loop_context=$(build_loop_context "$loop_count")
+
+    # Read prompt file content
+    local prompt_content=""
+    if [[ -f "$PROMPT_FILE" ]]; then
+        prompt_content=$(cat "$PROMPT_FILE")
+    else
+        log_status "ERROR" "Prompt file not found: $PROMPT_FILE"
+        return 1
+    fi
+
+    # Construct full prompt: prompt content + loop context
+    local full_prompt="$prompt_content"
+    if [[ -n "$loop_context" ]]; then
+        full_prompt="${full_prompt}
+
+---
+Loop Context: ${loop_context}"
+    fi
+
+    # Get baseline JSONL line count
+    local project_dir
+    project_dir=$(pwd)
+    local jsonl_dir
+    jsonl_dir=$(get_project_jsonl_dir "$project_dir")
+    local jsonl_file
+    jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+
+    if [[ -z "$jsonl_file" ]]; then
+        log_status "ERROR" "No active JSONL session file found in $jsonl_dir"
+        return 1
+    fi
+
+    local baseline_count
+    baseline_count=$(wc -l < "$jsonl_file")
+
+    # Send prompt to interactive Claude
+    local start_time
+    start_time=$(date +%s)
+    log_status "INFO" "Sending prompt to interactive Claude (baseline: $baseline_count lines)..."
+
+    if ! send_prompt_interactive "$full_prompt"; then
+        log_status "ERROR" "Failed to send prompt to interactive Claude"
+        return 1
+    fi
+
+    # Wait for response
+    log_status "INFO" "Waiting for Claude response (timeout: ${CLAUDE_TIMEOUT_MINUTES}m)..."
+    local wait_result=0
+    wait_for_response "$jsonl_file" "$baseline_count" "$timeout_seconds" || wait_result=$?
+
+    local end_time
+    end_time=$(date +%s)
+    local duration_ms=$(( (end_time - start_time) * 1000 ))
+
+    if [[ $wait_result -ne 0 ]]; then
+        log_status "WARN" "Claude Code interactive timed out after ${CLAUDE_TIMEOUT_MINUTES} minutes"
+    fi
+
+    # Re-check JSONL file (may have changed if new session was created)
+    jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+
+    # Extract response and build synthetic output file
+    extract_response_from_jsonl "$jsonl_file" "$baseline_count" "$output_file" "$duration_ms"
+
+    # Increment call counter
+    echo "$calls_made" > "$CALL_COUNT_FILE"
+
+    # Clear progress file
+    echo '{"status": "completed", "timestamp": "'$(date '+%Y-%m-%d %H:%M:%S')'"}' > "$PROGRESS_FILE"
+
+    log_status "SUCCESS" "Interactive Claude execution completed"
+
+    # Analyze the response (reuses existing pipeline)
+    log_status "INFO" "Analyzing Claude Code response..."
+    analyze_response "$output_file" "$loop_count"
+
+    # Update exit signals based on analysis
+    update_exit_signals
+
+    # Log analysis summary
+    log_analysis_summary
+
+    # Get file change count for circuit breaker
+    local files_changed=0
+    local current_sha=""
+
+    if command -v git &>/dev/null && git rev-parse --git-dir &>/dev/null 2>&1; then
+        current_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ -n "$loop_start_sha" && -n "$current_sha" && "$loop_start_sha" != "$current_sha" ]]; then
+            files_changed=$(
+                {
+                    git diff --name-only "$loop_start_sha" "$current_sha" 2>/dev/null
+                    git diff --name-only HEAD 2>/dev/null
+                    git diff --name-only --cached 2>/dev/null
+                } | sort -u | wc -l
+            )
+        else
+            files_changed=$(
+                {
+                    git diff --name-only 2>/dev/null
+                    git diff --name-only --cached 2>/dev/null
+                } | sort -u | wc -l
+            )
+        fi
+    fi
+
+    local has_errors="false"
+    if grep -v '"[^"]*error[^"]*":' "$output_file" 2>/dev/null | \
+       grep -qE '(^Error:|^ERROR:|^error:|\]: error|Link: error|Error occurred|failed with error|[Ee]xception|Fatal|FATAL)'; then
+        has_errors="true"
+    fi
+    local output_length=$(wc -c < "$output_file" 2>/dev/null || echo 0)
+
+    # Record result in circuit breaker
+    record_loop_result "$loop_count" "$files_changed" "$has_errors" "$output_length"
+    local circuit_result=$?
+
+    if [[ $circuit_result -ne 0 ]]; then
+        log_status "WARN" "Circuit breaker opened - halting execution"
+        teardown_interactive_session
+        return 3
+    fi
+
+    return 0
+}
+
 # Cleanup function
 cleanup() {
     log_status "INFO" "Ralph loop interrupted. Cleaning up..."
+    if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+        teardown_interactive_session
+    fi
     reset_session "manual_interrupt"
     update_status "$loop_count" "$(cat "$CALL_COUNT_FILE" 2>/dev/null || echo "0")" "interrupted" "stopped"
     exit 0
@@ -1602,6 +1771,15 @@ main() {
 
     # Initialize session tracking before entering the loop
     init_session_tracking
+
+    # Initialize interactive session if enabled
+    if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+        log_status "INFO" "Interactive mode enabled — launching Claude session..."
+        if ! init_interactive_session; then
+            log_status "ERROR" "Failed to initialize interactive session"
+            exit 1
+        fi
+    fi
 
     log_status "INFO" "Starting main loop..."
 
@@ -1702,7 +1880,11 @@ main() {
         update_status "$loop_count" "$calls_made" "executing" "running"
         
         # Execute Claude Code
-        execute_claude_code "$loop_count"
+        if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+            execute_claude_code_interactive "$loop_count"
+        else
+            execute_claude_code "$loop_count"
+        fi
         local exec_result=$?
         
         if [ $exec_result -eq 0 ]; then
@@ -1788,6 +1970,8 @@ Options:
     --circuit-status        Show circuit breaker status and exit
     --auto-reset-circuit    Auto-reset circuit breaker on startup (bypasses cooldown)
     --reset-session         Reset session state and exit (clears session continuity)
+    -i, --interactive       Use interactive Claude session via tmux (Claude Code Max)
+                            Avoids API costs by driving an interactive Claude session
 
 Modern CLI Options (Phase 1.1):
     --output-format FORMAT  Set Claude output format: json or text (default: $CLAUDE_OUTPUT_FORMAT)
@@ -1820,6 +2004,7 @@ Examples:
     $0 --output-format text     # Use legacy text output format
     $0 --no-continue            # Disable session continuity
     $0 --session-expiry 48      # 48-hour session expiration
+    $0 --interactive --monitor  # Interactive mode with Claude Code Max subscription
 
 HELPEOF
 }
@@ -1925,6 +2110,10 @@ while [[ $# -gt 0 ]]; do
             CB_AUTO_RESET=true
             shift
             ;;
+        --interactive|-i)
+            INTERACTIVE_MODE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             show_help
@@ -1935,6 +2124,11 @@ done
 
 # Only execute when run directly, not when sourced
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    # Interactive mode: init session before tmux or main loop
+    if [[ "$INTERACTIVE_MODE" == "true" ]]; then
+        check_tmux_available
+    fi
+
     # If tmux mode requested, set it up
     if [[ "$USE_TMUX" == "true" ]]; then
         check_tmux_available
