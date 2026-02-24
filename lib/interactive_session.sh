@@ -5,7 +5,7 @@
 # This avoids API costs by using a Claude Code Max subscription
 
 # Configuration
-INTERACTIVE_MODE="${INTERACTIVE_MODE:-false}"
+# Note: INTERACTIVE_MODE is set by ralph_loop.sh (CLI flag or .ralphrc), not here
 INTERACTIVE_TMUX_SESSION=""
 INTERACTIVE_CLAUDE_PANE=""
 INTERACTIVE_POLL_INTERVAL=2       # seconds between JSONL polls
@@ -131,34 +131,22 @@ init_interactive_session() {
         log_status "INFO" "Created tmux session '$INTERACTIVE_TMUX_SESSION' with Claude in pane 1"
     fi
 
-    # Wait for Claude to be ready (poll for JSONL directory activity)
+    # Wait for Claude to be ready by checking the tmux pane for the input prompt
+    # Claude's JSONL file is only created after the first message, so we check
+    # the pane content instead
     log_status "INFO" "Waiting for Claude to initialize..."
-    local jsonl_dir
-    jsonl_dir=$(get_project_jsonl_dir "$project_dir")
 
     local wait_count=0
-    local max_wait=30  # 30 seconds max wait for startup
+    local max_wait=60  # 60 seconds max wait for startup
     while [[ $wait_count -lt $max_wait ]]; do
-        local jsonl_file
-        jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
-        if [[ -n "$jsonl_file" ]]; then
-            # Check if file was modified in the last 10 seconds (fresh session)
-            local file_age
-            if stat -c %Y "$jsonl_file" &>/dev/null; then
-                local file_mtime
-                file_mtime=$(stat -c %Y "$jsonl_file")
-                local now
-                now=$(date +%s)
-                file_age=$((now - file_mtime))
-            else
-                file_age=999
-            fi
+        # Capture pane content and check for Claude's ready indicators
+        local pane_content
+        pane_content=$(tmux capture-pane -t "$INTERACTIVE_CLAUDE_PANE" -p 2>/dev/null || echo "")
 
-            if [[ $file_age -lt 10 ]]; then
-                INTERACTIVE_SESSION_ID=$(basename "$jsonl_file" .jsonl)
-                log_status "SUCCESS" "Claude session ready: ${INTERACTIVE_SESSION_ID:0:20}..."
-                return 0
-            fi
+        # Claude shows ">" prompt or "? for shortcuts" when ready
+        if echo "$pane_content" | grep -qE '(for shortcuts|^❯|^>)'; then
+            log_status "SUCCESS" "Claude session ready"
+            return 0
         fi
         sleep 1
         ((wait_count++))
@@ -190,6 +178,8 @@ send_prompt_interactive() {
     # Load into tmux buffer and paste
     tmux load-buffer "$tmp_file"
     tmux paste-buffer -t "$INTERACTIVE_CLAUDE_PANE"
+    # Brief delay for Claude's TUI to register the pasted content before Enter
+    sleep 1
     tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" Enter
 
     rm -f "$tmp_file"

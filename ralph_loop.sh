@@ -158,7 +158,10 @@ load_ralphrc() {
     [[ -n "$_env_CB_COOLDOWN_MINUTES" ]] && CB_COOLDOWN_MINUTES="$_env_CB_COOLDOWN_MINUTES"
     [[ -n "$_env_CB_AUTO_RESET" ]] && CB_AUTO_RESET="$_env_CB_AUTO_RESET"
     [[ -n "$_env_CLAUDE_CODE_CMD" ]] && CLAUDE_CODE_CMD="$_env_CLAUDE_CODE_CMD"
+    # CLI --interactive flag takes precedence over .ralphrc
+    # _env_INTERACTIVE_MODE captures pre-default env state; _cli_INTERACTIVE_MODE captures CLI flag
     [[ -n "$_env_INTERACTIVE_MODE" ]] && INTERACTIVE_MODE="$_env_INTERACTIVE_MODE"
+    [[ "${_cli_INTERACTIVE_MODE:-}" == "true" ]] && INTERACTIVE_MODE=true
 
     RALPHRC_LOADED=true
     return 0
@@ -1585,13 +1588,11 @@ Loop Context: ${loop_context}"
     local jsonl_file
     jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
 
-    if [[ -z "$jsonl_file" ]]; then
-        log_status "ERROR" "No active JSONL session file found in $jsonl_dir"
-        return 1
+    # JSONL file may not exist yet on first prompt (Claude creates it on first message)
+    local baseline_count=0
+    if [[ -n "$jsonl_file" ]]; then
+        baseline_count=$(wc -l < "$jsonl_file")
     fi
-
-    local baseline_count
-    baseline_count=$(wc -l < "$jsonl_file")
 
     # Send prompt to interactive Claude
     local start_time
@@ -1601,6 +1602,26 @@ Loop Context: ${loop_context}"
     if ! send_prompt_interactive "$full_prompt"; then
         log_status "ERROR" "Failed to send prompt to interactive Claude"
         return 1
+    fi
+
+    # If JSONL file didn't exist before, wait for it to appear
+    if [[ -z "$jsonl_file" ]]; then
+        log_status "INFO" "Waiting for JSONL session file to appear..."
+        local jsonl_wait=0
+        while [[ $jsonl_wait -lt 30 ]]; do
+            jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+            if [[ -n "$jsonl_file" ]]; then
+                INTERACTIVE_SESSION_ID=$(basename "$jsonl_file" .jsonl)
+                log_status "INFO" "JSONL session file found: ${INTERACTIVE_SESSION_ID:0:20}..."
+                break
+            fi
+            sleep 1
+            ((jsonl_wait++))
+        done
+        if [[ -z "$jsonl_file" ]]; then
+            log_status "ERROR" "JSONL session file never appeared in $jsonl_dir"
+            return 1
+        fi
     fi
 
     # Wait for response
@@ -2112,6 +2133,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --interactive|-i)
             INTERACTIVE_MODE=true
+            _cli_INTERACTIVE_MODE=true
             shift
             ;;
         *)
