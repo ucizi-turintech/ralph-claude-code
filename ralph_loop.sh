@@ -1580,6 +1580,10 @@ execute_claude_code_interactive() {
 Loop Context: ${loop_context}"
     fi
 
+    # Clear conversation context so each turn is isolated (like headless -p mode)
+    tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "/clear" Enter 2>/dev/null || true
+    sleep 2
+
     # Get baseline JSONL line count
     local project_dir
     project_dir=$(pwd)
