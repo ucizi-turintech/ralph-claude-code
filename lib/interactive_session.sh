@@ -9,7 +9,7 @@
 INTERACTIVE_TMUX_SESSION=""
 INTERACTIVE_CLAUDE_PANE=""
 INTERACTIVE_POLL_INTERVAL=2       # seconds between JSONL polls
-INTERACTIVE_IDLE_THRESHOLD=5      # seconds of no new JSONL lines = turn complete
+INTERACTIVE_IDLE_THRESHOLD=60     # seconds of no new JSONL lines = turn complete
 INTERACTIVE_STUCK_TIMEOUT=60      # seconds before sending stuck notification
 INTERACTIVE_SESSION_ID=""         # captured from JSONL directory
 
