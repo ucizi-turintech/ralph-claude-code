@@ -1586,7 +1586,7 @@ Loop Context: ${loop_context}"
     local jsonl_dir
     jsonl_dir=$(get_project_jsonl_dir "$project_dir")
     local jsonl_file
-    jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+    jsonl_file=$(get_active_session_jsonl "$jsonl_dir") || true
 
     # JSONL file may not exist yet on first prompt (Claude creates it on first message)
     local baseline_count=0
@@ -1609,7 +1609,7 @@ Loop Context: ${loop_context}"
         log_status "INFO" "Waiting for JSONL session file to appear..."
         local jsonl_wait=0
         while [[ $jsonl_wait -lt 30 ]]; do
-            jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+            jsonl_file=$(get_active_session_jsonl "$jsonl_dir") || true
             if [[ -n "$jsonl_file" ]]; then
                 INTERACTIVE_SESSION_ID=$(basename "$jsonl_file" .jsonl)
                 log_status "INFO" "JSONL session file found: ${INTERACTIVE_SESSION_ID:0:20}..."
@@ -1638,7 +1638,7 @@ Loop Context: ${loop_context}"
     fi
 
     # Re-check JSONL file (may have changed if new session was created)
-    jsonl_file=$(get_active_session_jsonl "$jsonl_dir")
+    jsonl_file=$(get_active_session_jsonl "$jsonl_dir") || true
 
     # Extract response and build synthetic output file
     extract_response_from_jsonl "$jsonl_file" "$baseline_count" "$output_file" "$duration_ms"
