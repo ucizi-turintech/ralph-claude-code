@@ -8,6 +8,7 @@
 # Note: INTERACTIVE_MODE is set by ralph_loop.sh (CLI flag or .ralphrc), not here
 INTERACTIVE_TMUX_SESSION=""
 INTERACTIVE_CLAUDE_PANE=""
+INTERACTIVE_RALPH_PANE=""         # Ralph's own pane ID, captured once at first init
 INTERACTIVE_POLL_INTERVAL=2       # seconds between JSONL polls
 INTERACTIVE_IDLE_THRESHOLD=60     # seconds of no new JSONL lines = turn complete
 INTERACTIVE_STUCK_TIMEOUT=60      # seconds before sending stuck notification
@@ -99,12 +100,14 @@ init_interactive_session() {
 
     # Check if we're already inside tmux
     if [[ -n "${TMUX:-}" ]]; then
-        # We're inside tmux — create a new pane in the current window
-        local current_pane
-        current_pane=$(tmux display-message -p '#{pane_id}')
+        # Capture Ralph's pane ID on first init so subsequent reinits
+        # always split from the same window, even if the user has switched focus
+        if [[ -z "$INTERACTIVE_RALPH_PANE" ]]; then
+            INTERACTIVE_RALPH_PANE=$(tmux display-message -p '#{pane_id}')
+        fi
 
-        # Split horizontally to create Claude pane
-        INTERACTIVE_CLAUDE_PANE=$(tmux split-window -h -t "$current_pane" -c "$project_dir" -P -F '#{pane_id}')
+        # Split horizontally from Ralph's pane to create Claude pane
+        INTERACTIVE_CLAUDE_PANE=$(tmux split-window -h -t "$INTERACTIVE_RALPH_PANE" -c "$project_dir" -P -F '#{pane_id}')
 
         # Launch Claude in the new pane
         tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "claude" Enter
