@@ -1580,10 +1580,6 @@ execute_claude_code_interactive() {
 Loop Context: ${loop_context}"
     fi
 
-    # Clear conversation context so each turn is isolated (like headless -p mode)
-    tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "/clear" Enter 2>/dev/null || true
-    sleep 2
-
     # Get baseline JSONL line count
     local project_dir
     project_dir=$(pwd)
@@ -1646,6 +1642,18 @@ Loop Context: ${loop_context}"
 
     # Extract response and build synthetic output file
     extract_response_from_jsonl "$jsonl_file" "$baseline_count" "$output_file" "$duration_ms"
+
+    # Save JSONL transcript for this loop iteration
+    local new_lines=$(($(wc -l < "$jsonl_file") - baseline_count))
+    if [[ $new_lines -gt 0 ]]; then
+        local transcript_file="$RALPH_DIR/logs/interactive_loop_${loop_count}.jsonl"
+        tail -n "$new_lines" "$jsonl_file" > "$transcript_file"
+        log_status "INFO" "Saved interactive transcript: $transcript_file ($new_lines lines)"
+    fi
+
+    # Kill pane and start fresh session for next loop (per-loop isolation)
+    teardown_interactive_session
+    init_interactive_session
 
     # Increment call counter
     echo "$calls_made" > "$CALL_COUNT_FILE"

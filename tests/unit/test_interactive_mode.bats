@@ -342,6 +342,85 @@ EOF
     assert_success
 }
 
+@test "teardown_interactive_session does not send /exit command" {
+    # The simplified teardown should just kill the pane, not send /exit
+    # Verify by checking the function source does not contain send-keys /exit
+    local func_source
+    func_source=$(declare -f teardown_interactive_session)
+    # Should NOT contain /exit
+    [[ "$func_source" != *"/exit"* ]]
+}
+
+@test "teardown_interactive_session clears INTERACTIVE_CLAUDE_PANE" {
+    # Mock tmux kill-pane to succeed
+    tmux() { return 0; }
+    export -f tmux
+
+    INTERACTIVE_CLAUDE_PANE="some-pane-id"
+    teardown_interactive_session
+    assert_equal "$INTERACTIVE_CLAUDE_PANE" ""
+}
+
+# =============================================================================
+# Transcript saving tests
+# =============================================================================
+
+@test "transcript file is created from new JSONL lines" {
+    local jsonl_file="$TEST_DIR/session.jsonl"
+
+    # Simulate a JSONL file with 2 baseline lines + 3 new lines
+    cat > "$jsonl_file" << 'EOF'
+{"type":"user","sessionId":"s1","message":{"role":"user","content":"baseline prompt"}}
+{"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"baseline response"}]}}
+{"type":"user","sessionId":"s1","message":{"role":"user","content":"new prompt"}}
+{"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"text","text":"new response"}]}}
+{"type":"system","subtype":"turn_duration","duration_ms":5000}
+EOF
+
+    local baseline_count=2
+    local loop_count=7
+    local new_lines=$(($(wc -l < "$jsonl_file") - baseline_count))
+    local transcript_file="$RALPH_DIR/logs/interactive_loop_${loop_count}.jsonl"
+
+    # Replicate the transcript saving logic from ralph_loop.sh
+    if [[ $new_lines -gt 0 ]]; then
+        tail -n "$new_lines" "$jsonl_file" > "$transcript_file"
+    fi
+
+    # Verify transcript was created
+    assert_file_exists "$transcript_file"
+
+    # Verify correct number of lines
+    local transcript_lines
+    transcript_lines=$(wc -l < "$transcript_file")
+    assert_equal "$transcript_lines" "3"
+
+    # Verify content is from the new lines only (not baseline)
+    run grep -c "new prompt" "$transcript_file"
+    assert_equal "$output" "1"
+
+    run grep -c "baseline prompt" "$transcript_file"
+    assert_equal "$output" "0"
+}
+
+@test "transcript file is not created when no new JSONL lines" {
+    local jsonl_file="$TEST_DIR/session.jsonl"
+
+    echo '{"type":"user","sessionId":"s1","message":{"role":"user","content":"baseline"}}' > "$jsonl_file"
+
+    local baseline_count=1
+    local loop_count=3
+    local new_lines=$(($(wc -l < "$jsonl_file") - baseline_count))
+    local transcript_file="$RALPH_DIR/logs/interactive_loop_${loop_count}.jsonl"
+
+    if [[ $new_lines -gt 0 ]]; then
+        tail -n "$new_lines" "$jsonl_file" > "$transcript_file"
+    fi
+
+    # Transcript should not exist
+    [[ ! -f "$transcript_file" ]]
+}
+
 # =============================================================================
 # Integration: synthetic output compatibility with analyze_response
 # =============================================================================

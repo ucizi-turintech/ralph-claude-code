@@ -372,34 +372,17 @@ check_interactive_session_alive() {
     return $?
 }
 
-# teardown_interactive_session - Cleanly close the interactive Claude session
+# teardown_interactive_session - Kill the interactive Claude pane
 #
-# Sends /exit to Claude, waits briefly, then kills the pane if needed.
+# Directly kills the tmux pane without sending /exit. This is used for
+# per-loop session isolation: each loop gets a fresh Claude session.
 teardown_interactive_session() {
     if [[ -z "$INTERACTIVE_CLAUDE_PANE" ]]; then
         return 0
     fi
 
     log_status "INFO" "Tearing down interactive session..."
-
-    # Send /exit command to Claude
-    tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "/exit" Enter 2>/dev/null || true
-
-    # Wait up to 5 seconds for clean exit
-    local wait_count=0
-    while [[ $wait_count -lt 5 ]]; do
-        if ! tmux list-panes -t "$INTERACTIVE_CLAUDE_PANE" &>/dev/null 2>&1; then
-            log_status "INFO" "Claude session closed cleanly"
-            INTERACTIVE_CLAUDE_PANE=""
-            return 0
-        fi
-        sleep 1
-        ((wait_count++))
-    done
-
-    # Force kill if still alive
     tmux kill-pane -t "$INTERACTIVE_CLAUDE_PANE" 2>/dev/null || true
     INTERACTIVE_CLAUDE_PANE=""
-    log_status "INFO" "Claude session force-closed"
     return 0
 }
