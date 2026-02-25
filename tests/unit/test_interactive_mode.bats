@@ -333,6 +333,28 @@ EOF
 }
 
 # =============================================================================
+# wait_for_response tests
+# =============================================================================
+
+@test "wait_for_response exits early when pane dies" {
+    # Mock check_interactive_session_alive to return failure (pane dead)
+    check_interactive_session_alive() { return 1; }
+    export -f check_interactive_session_alive
+
+    INTERACTIVE_POLL_INTERVAL=1
+    INTERACTIVE_IDLE_THRESHOLD=60
+    INTERACTIVE_STUCK_TIMEOUT=60
+
+    local jsonl_file="$TEST_DIR/session.jsonl"
+    echo '{"type":"user"}' > "$jsonl_file"
+
+    # Should return quickly (not wait 300s) because pane is dead
+    run wait_for_response "$jsonl_file" 0 300
+    assert_success
+    [[ "$output" == *"pane died"* ]]
+}
+
+# =============================================================================
 # teardown_interactive_session tests
 # =============================================================================
 

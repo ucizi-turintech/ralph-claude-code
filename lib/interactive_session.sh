@@ -216,6 +216,13 @@ wait_for_response() {
         sleep "$INTERACTIVE_POLL_INTERVAL"
         elapsed=$((elapsed + INTERACTIVE_POLL_INTERVAL))
 
+        # If the pane was killed (e.g., user manually closed it), stop waiting.
+        # This lets killing the pane act as a "skip this turn" signal.
+        if ! check_interactive_session_alive; then
+            log_status "INFO" "Claude pane died — ending wait early"
+            return 0
+        fi
+
         # Count current lines
         local current_count=0
         if [[ -f "$jsonl_file" ]]; then
