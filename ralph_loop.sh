@@ -1651,9 +1651,9 @@ Loop Context: ${loop_context}"
         log_status "INFO" "Saved interactive transcript: $transcript_file ($new_lines lines)"
     fi
 
-    # Kill pane and start fresh session for next loop (per-loop isolation)
+    # Kill pane for per-loop isolation. The next loop's safety net
+    # (check_interactive_session_alive at function entry) will reinit.
     teardown_interactive_session
-    init_interactive_session
 
     # Increment call counter
     echo "$calls_made" > "$CALL_COUNT_FILE"
