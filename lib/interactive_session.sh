@@ -109,6 +109,9 @@ init_interactive_session() {
         # Split horizontally from Ralph's pane to create Claude pane
         INTERACTIVE_CLAUDE_PANE=$(tmux split-window -h -t "$INTERACTIVE_RALPH_PANE" -c "$project_dir" -P -F '#{pane_id}')
 
+        # Wait for shell to be ready in the new pane before sending command
+        sleep 3
+
         # Launch Claude in the new pane
         tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "claude" Enter
 
@@ -127,6 +130,9 @@ init_interactive_session() {
         tmux split-window -h -t "$INTERACTIVE_TMUX_SESSION:${base_win}" -c "$project_dir"
 
         INTERACTIVE_CLAUDE_PANE="$INTERACTIVE_TMUX_SESSION:${base_win}.1"
+
+        # Wait for shell to be ready in the new pane before sending command
+        sleep 3
 
         # Launch Claude in pane 1
         tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" "claude" Enter
