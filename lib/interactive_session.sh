@@ -180,16 +180,14 @@ send_prompt_interactive() {
         return 1
     fi
 
-    # Write prompt to temp file
+    # Write prompt to temp file with trailing newline so paste-buffer
+    # delivers the Enter atomically with the content (no separate send-keys needed)
     local tmp_file="/tmp/ralph_prompt_$$.txt"
-    printf '%s' "$prompt_content" > "$tmp_file"
+    printf '%s\n' "$prompt_content" > "$tmp_file"
 
     # Load into tmux buffer and paste
     tmux load-buffer "$tmp_file"
     tmux paste-buffer -t "$INTERACTIVE_CLAUDE_PANE"
-    # Brief delay for Claude's TUI to register the pasted content before Enter
-    sleep 1
-    tmux send-keys -t "$INTERACTIVE_CLAUDE_PANE" Enter
 
     rm -f "$tmp_file"
 
